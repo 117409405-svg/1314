@@ -15,7 +15,7 @@ import logging
 import os
 import re
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 import requests
@@ -63,6 +63,9 @@ class MonitorConfig:
     request_timeout: int = 20
     """HTTP timeout for scraping operations."""
 
+    processed_hash_retention: int = 2000
+    """Maximum number of processed transaction hashes kept in memory."""
+
     @classmethod
     def from_env(cls) -> "MonitorConfig":
         """Load configuration from environment variables.
@@ -85,6 +88,8 @@ class MonitorConfig:
             Sets :attr:`telegram_chat_id`.
         ``REQUEST_TIMEOUT``
             Numeric override for :attr:`request_timeout`.
+        ``PROCESSED_HASH_RETENTION``
+            Numeric override for :attr:`processed_hash_retention`.
         """
 
         def maybe_int(name: str, default: int) -> int:
@@ -107,6 +112,9 @@ class MonitorConfig:
             telegram_token=os.getenv("TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
             request_timeout=maybe_int("REQUEST_TIMEOUT", cls.request_timeout),
+            processed_hash_retention=maybe_int(
+                "PROCESSED_HASH_RETENTION", cls.processed_hash_retention
+            ),
         )
 
 
@@ -114,6 +122,12 @@ class GmgnScraper:
     """Scrape the gmgn.ai leaderboard for the top smart-money wallets."""
 
     ADDRESS_PATTERN = re.compile(r"0x[a-fA-F0-9]{40}")
+    DEFAULT_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
 
     def __init__(self, url: str, timeout: int = 20) -> None:
         self.url = url
@@ -128,8 +142,14 @@ class GmgnScraper:
         address.
         """
         LOGGER.debug("Fetching gmgn leaderboard from %s", self.url)
-        response = requests.get(self.url, timeout=self.timeout)
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                self.url, timeout=self.timeout, headers=self.DEFAULT_HEADERS
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            LOGGER.error("Failed to fetch gmgn leaderboard: %s", exc)
+            return []
         soup = BeautifulSoup(response.text, "html.parser")
 
         wallets: List[str] = []
@@ -241,6 +261,21 @@ class SmartMoneyMonitor:
             raise RuntimeError("Failed to connect to BSC RPC endpoint")
 
         self._processed_hashes: Set[str] = set()
+        self._hash_queue: deque[str] = deque(maxlen=config.processed_hash_retention)
+
+    def _remember_hash(self, tx_hash: str) -> None:
+        if tx_hash in self._processed_hashes:
+            return
+
+        if (
+            self._hash_queue.maxlen is not None
+            and len(self._hash_queue) >= self._hash_queue.maxlen
+        ):
+            oldest = self._hash_queue.popleft()
+            self._processed_hashes.discard(oldest)
+
+        self._hash_queue.append(tx_hash)
+        self._processed_hashes.add(tx_hash)
 
     def _recent_transactions(self, addresses: Sequence[str], blocks: int = 20) -> Dict[str, List[TxData]]:
         latest_block = self.web3.eth.block_number
@@ -272,7 +307,7 @@ class SmartMoneyMonitor:
 
                 if key is not None:
                     transactions[key].append(tx)
-                    self._processed_hashes.add(tx_hash_hex)
+                    self._remember_hash(tx_hash_hex)
 
         return transactions
 

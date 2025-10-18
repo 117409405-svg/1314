@@ -37,6 +37,7 @@ quick test, but you will usually want to configure at least the Telegram values.
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token used for notifications. |
 | `TELEGRAM_CHAT_ID` | Telegram chat ID that receives notifications. |
 | `REQUEST_TIMEOUT` | HTTP timeout (seconds) when scraping gmgn.ai (default: `20`). |
+| `PROCESSED_HASH_RETENTION` | Number of processed transaction hashes to keep (default: `2000`). |
 
 ## Usage
 
@@ -60,4 +61,6 @@ notifications.
   You are encouraged to iterate on them to better match your definition of
   "smart money" behaviour.
 - The gmgn.ai frontend may evolve without warning. If scraping stops working,
-  adjust the selectors in `GmgnScraper`.
+  adjust the selectors in `GmgnScraper`. Supplying a desktop-like User-Agent
+  header (as the script now does by default) often helps avoid being served
+  minimal or bot-filtered markup.
